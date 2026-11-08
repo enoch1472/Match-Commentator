@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import json
 import torch
@@ -49,7 +50,7 @@ def generate_summary(model, stat_prompt):
     messages = [
         {
             "role": "system",
-            "content": "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline and teams."
+            "content": "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline, teams, and goalscorers."
         },
         {"role": "user", "content": stat_prompt}
     ]
@@ -60,7 +61,7 @@ def generate_summary(model, stat_prompt):
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=40,
+            max_new_tokens=55,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
@@ -70,7 +71,7 @@ def generate_summary(model, stat_prompt):
 
 def run_comparison():
     print("\n" + "=" * 80)
-    print("1. EVALUATING BASELINE MODEL")
+    print("1. EVALUATING BASELINE MODEL (UNTUNED)")
     print("=" * 80)
     base_results = []
     for stat_prompt, label in test_cases:

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import gc
 import torch
@@ -83,7 +84,7 @@ def train_model():
         "peft_config": peft_config,
         "args": training_args,
     }
-    
+
     try:
         trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:

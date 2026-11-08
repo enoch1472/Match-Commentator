@@ -1,10 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Football Match Report Generator - Step 1: Dataset Fetcher & Preparer
-Supports fetching authentic Premier League match fixtures and team data via the
-football-data.org REST API, with fallback to verified synthetic generation.
-"""
-
 import os
 import json
 import random
@@ -81,52 +75,80 @@ CLEAN_TEAM_NAMES = {
 }
 
 def clean_team_name(raw_name: str) -> str:
-    """Standardize API team names to match concise conversational football names."""
     if raw_name in CLEAN_TEAM_NAMES:
         return CLEAN_TEAM_NAMES[raw_name]
     cleaned = raw_name.replace(" FC", "").replace(" & Hove Albion", "").replace(" United", "")
     return cleaned.strip()
 
-def build_ground_truth_summary(home_team: str, away_team: str, home_score: int, away_score: int, half_time=None) -> str:
-    """
-    Builds a strict, non-hallucinated journalistic summary based on the exact outcome.
-    Incorporates clean sheets, margins of victory, scorelines, and comeback dynamics when half-time is provided.
-    """
+def _clean_scorer_names(scorer_str: str) -> str:
+    if not scorer_str:
+        return ""
+    names = [re.sub(r"\s*\d+[\'’]", "", p).strip() for p in scorer_str.split(",") if p.strip()]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+def build_ground_truth_summary(home_team: str, away_team: str, home_score: int, away_score: int,
+                               half_time=None, h_scorers: str = "", a_scorers: str = "") -> str:
+    h_names = _clean_scorer_names(h_scorers)
+    a_names = _clean_scorer_names(a_scorers)
+
     if half_time and "home" in half_time and "away" in half_time:
         ht_home = half_time.get("home") or 0
         ht_away = half_time.get("away") or 0
-        # Comeback scenario
         if ht_home < ht_away and home_score > away_score:
-            return f"{home_team} produced an impressive second-half comeback to defeat {away_team} {home_score}-{away_score} after trailing at the break."
+            base = f"{home_team} produced an impressive second-half comeback to defeat {away_team} {home_score}-{away_score}"
+            return f"{base}, with goals from {h_names} overturning the halftime deficit." if h_names else f"{base} after trailing at the break."
         elif ht_away < ht_home and away_score > home_score:
-            return f"{away_team} rallied from behind in the second half to secure a sensational {away_score}-{home_score} away victory over {home_team}."
+            base = f"{away_team} rallied from behind in the second half to secure a sensational {away_score}-{home_score} away victory over {home_team}"
+            return f"{base}, courtesy of strikes from {a_names}." if a_names else f"{base} after trailing at the break."
 
     if home_score > away_score:
         if away_score == 0:
-            return f"{home_team} earned a comfortable {home_score}-0 clean-sheet victory over {away_team}."
+            base = f"{home_team} earned a comfortable {home_score}-0 clean-sheet victory over {away_team}"
+            return f"{base}, courtesy of goals from {h_names}." if h_names else f"{base}."
         elif home_score - away_score == 1:
-            return f"{home_team} edged past {away_team} with a hard-fought {home_score}-{away_score} win."
+            base = f"{home_team} edged past {away_team} with a hard-fought {home_score}-{away_score} win"
+            if h_names and a_names:
+                return f"{base}, with {h_names} on target for the hosts despite {a_names} scoring for {away_team}."
+            return f"{base}."
         else:
-            return f"{home_team} defeated {away_team} {home_score}-{away_score} with a dominant performance."
+            base = f"{home_team} defeated {away_team} {home_score}-{away_score} with a dominant performance"
+            return f"{base}, powered by goals from {h_names}." if h_names else f"{base}."
+
     elif away_score > home_score:
         if home_score == 0:
-            return f"{away_team} secured an impressive {away_score}-0 away win against {home_team}."
+            base = f"{away_team} secured an impressive {away_score}-0 away win against {home_team}"
+            return f"{base}, with goals from {a_names} sealing the points." if a_names else f"{base}."
         elif away_score - home_score == 1:
-            return f"{away_team} claimed a tight {away_score}-{home_score} away victory over {home_team}."
+            base = f"{away_team} claimed a tight {away_score}-{home_score} away victory over {home_team}"
+            if a_names and h_names:
+                return f"{base}, with {a_names} netting for the visitors and {h_names} scoring for {home_team}."
+            return f"{base}."
         else:
-            return f"{away_team} beat {home_team} {away_score}-{home_score} on the road."
+            base = f"{away_team} beat {home_team} {away_score}-{home_score} on the road"
+            return f"{base}, thanks to strikes from {a_names}." if a_names else f"{base}."
+
     else:
         if home_score == 0:
             return f"{home_team} and {away_team} played out a scoreless 0-0 draw."
         else:
-            return f"{home_team} and {away_team} shared the points in an entertaining {home_score}-{away_score} draw."
+            base = f"{home_team} and {away_team} shared the points in an entertaining {home_score}-{away_score} draw"
+            if h_names and a_names:
+                return f"{base}, with {h_names} finding the net for {home_team} and {a_names} replying for {away_team}."
+            return f"{base}."
 
 def format_sample(stat_input: str, summary: str) -> dict:
     return {
         "messages": [
             {
                 "role": "system",
-                "content": "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline and teams."
+                "content": "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline, teams, and goalscorers."
             },
             {
                 "role": "user",
@@ -168,18 +190,14 @@ def generate_verified_fixture(players_pool: dict = None) -> dict:
     else:
         stat_input = f"{home_team} {home_score}-{away_score} {away_team}."
 
-    summary = build_ground_truth_summary(home_team, away_team, home_score, away_score)
+    summary = build_ground_truth_summary(home_team, away_team, home_score, away_score,
+                                         h_scorers=h_scorers, a_scorers=a_scorers)
     return format_sample(stat_input, summary)
 
 def fetch_real_matches_from_api(api_key: str = FOOTBALL_DATA_API_KEY, seasons=(2024, 2025)):
-    """
-    Fetches real finished Premier League matches from the football-data.org v4 API.
-    Builds clean, verified chat pairs preserving real scorelines and clubs.
-    """
     headers = {"X-Auth-Token": api_key}
     collected_matches = []
 
-    # Also fetch live squad rosters from the API to enrich player scorer realism
     dynamic_players = dict(PLAYERS)
     try:
         teams_url = f"{FOOTBALL_DATA_BASE_URL}/competitions/PL/teams?season=2024"
@@ -197,17 +215,17 @@ def fetch_real_matches_from_api(api_key: str = FOOTBALL_DATA_API_KEY, seasons=(2
                 if key_players:
                     dynamic_players[c_name] = key_players[:8]
     except Exception as e:
-        print(f"[Warning] Could not fetch dynamic team rosters from API: {e}")
+        print(f"[Warning] Could not fetch team rosters from API: {e}")
 
     for season in seasons:
         url = f"{FOOTBALL_DATA_BASE_URL}/competitions/PL/matches?season={season}&status=FINISHED"
         try:
-            print(f"-> Querying football-data.org for Premier League season {season}...")
+            print(f"-> Fetching Premier League matches for season {season}...")
             resp = requests.get(url, headers=headers, timeout=12)
             if resp.status_code == 200:
                 data = resp.json()
                 matches = data.get("matches", [])
-                print(f"   Fetched {len(matches)} finished fixtures for {season}.")
+                print(f"   Fetched {len(matches)} fixtures for {season}.")
                 for m in matches:
                     score = m.get("score", {}).get("fullTime", {})
                     ht_score = m.get("score", {}).get("halfTime", {})
@@ -219,7 +237,6 @@ def fetch_real_matches_from_api(api_key: str = FOOTBALL_DATA_API_KEY, seasons=(2
                     h_team = clean_team_name(m.get("homeTeam", {}).get("name", "Home Team"))
                     a_team = clean_team_name(m.get("awayTeam", {}).get("name", "Away Team"))
 
-                    # Assign plausible goalscorers based on verified match rosters
                     h_scorers = get_scorers(h_team, h_score, dynamic_players)
                     a_scorers = get_scorers(a_team, a_score, dynamic_players)
 
@@ -234,7 +251,9 @@ def fetch_real_matches_from_api(api_key: str = FOOTBALL_DATA_API_KEY, seasons=(2
                     else:
                         stat_input = f"{h_team} {h_score}-{a_score} {a_team}."
 
-                    summary = build_ground_truth_summary(h_team, a_team, h_score, a_score, half_time=ht_score)
+                    summary = build_ground_truth_summary(h_team, a_team, h_score, a_score,
+                                                         half_time=ht_score,
+                                                         h_scorers=h_scorers, a_scorers=a_scorers)
                     collected_matches.append(format_sample(stat_input, summary))
             else:
                 print(f"[Warning] API returned status {resp.status_code} for season {season}: {resp.text[:120]}")
@@ -244,11 +263,6 @@ def fetch_real_matches_from_api(api_key: str = FOOTBALL_DATA_API_KEY, seasons=(2
     return collected_matches, dynamic_players
 
 def build_dataset(use_api: bool = True, target_size: int = 400):
-    """
-    Builds the train and test dataset files.
-    Pulls real match statistics from football-data.org if use_api is True,
-    and blends with synthetic generator to ensure diverse fixture coverage.
-    """
     random.seed(42)
     dataset_pairs = []
     players_pool = PLAYERS
@@ -259,13 +273,11 @@ def build_dataset(use_api: bool = True, target_size: int = 400):
             print(f"[API] Retrieved {len(api_matches)} authentic Premier League fixtures from football-data.org.")
             dataset_pairs.extend(api_matches)
 
-    # If API returned fixtures, sample or supplement with synthetic fixtures
     if len(dataset_pairs) < target_size:
         needed = target_size - len(dataset_pairs)
-        print(f"-> Generating {needed} supplementary verified fixtures to reach target dataset size of {target_size}...")
+        print(f"-> Generating {needed} supplementary verified fixtures to reach target size of {target_size}...")
         dataset_pairs.extend([generate_verified_fixture(players_pool) for _ in range(needed)])
     else:
-        # Sample down to target_size while keeping real distribution
         random.shuffle(dataset_pairs)
         dataset_pairs = dataset_pairs[:target_size]
 
@@ -282,7 +294,7 @@ def build_dataset(use_api: bool = True, target_size: int = 400):
         for item in test_data:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    print(f"[Done] Generated/Fetched {len(dataset_pairs)} verified match pairs.")
+    print(f"[Done] Generated {len(dataset_pairs)} verified match pairs.")
     print(f"-> Saved {len(train_data)} training samples to: {TRAIN_PATH}")
     print(f"-> Saved {len(test_data)} test samples to: {TEST_PATH}")
 

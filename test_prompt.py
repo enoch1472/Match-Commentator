@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
-"""
-Premier League Match Report Generator - Interactive Terminal Tester
-Supports entering custom stats, inspecting live fixtures from football-data.org,
-and toggling between summary formats (one-sentence, bullets, tweet).
-"""
-
 import os
+import re
 import requests
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -23,7 +18,7 @@ model_dtype = torch.float16 if has_cuda else torch.float32
 
 base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
-    torch_dtype=model_dtype,
+    dtype=model_dtype,
     device_map="auto" if has_cuda else None
 )
 
@@ -34,17 +29,52 @@ else:
     model = base_model
     print("[Warning] LoRA adapter not found. Using baseline model.")
 
-def summarize(stat_prompt: str, format_mode: str = "sentence") -> str:
-    if format_mode == "bullets":
-        system_content = "You are a sports analyst. Write 3 concise bullet points summarizing the match result, scoreline, and key outcome without hallucinating."
-        max_tokens = 90
-    elif format_mode == "tweet":
-        system_content = "You are a Premier League social media editor. Write an engaging, factual tweet with the score, winner, and hashtags strictly based on the provided stats."
-        max_tokens = 60
-    else:
-        system_content = "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline and teams."
-        max_tokens = 45
+def ensure_scorers_in_report(summary: str, stat_prompt: str) -> str:
+    if "Scorers:" not in stat_prompt:
+        return summary
 
+    scorers_part = stat_prompt.split("Scorers:", 1)[1].strip().rstrip(".")
+    team_segments = [s.strip() for s in scorers_part.split(";") if s.strip()]
+
+    parsed = {}
+    for seg in team_segments:
+        if ":" in seg:
+            team, p_str = seg.split(":", 1)
+            raw = [re.sub(r"\s*\d+[\'’]", "", p).strip() for p in p_str.split(",") if p.strip()]
+            raw = [n for n in raw if n]
+            if raw:
+                parsed[team.strip()] = raw
+
+    if not parsed:
+        return summary
+
+    all_players = [p for names in parsed.values() for p in names]
+    if any(p.lower() in summary.lower() for p in all_players):
+        return summary
+
+    def join_names(names):
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+    base = summary.rstrip(".")
+    if len(parsed) == 2:
+        teams = list(parsed.keys())
+        t1, t2 = teams[0], teams[1]
+        p1 = join_names(parsed[t1])
+        p2 = join_names(parsed[t2])
+        return f"{base}, with {p1} on target for {t1} and {p2} scoring for {t2}."
+    elif len(parsed) == 1:
+        team = list(parsed.keys())[0]
+        p = join_names(parsed[team])
+        return f"{base}, courtesy of goals from {p}."
+
+    return summary
+
+def summarize(stat_prompt: str) -> str:
+    system_content = "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline, teams, and goalscorers."
     messages = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": stat_prompt}
@@ -56,16 +86,15 @@ def summarize(stat_prompt: str, format_mode: str = "sentence") -> str:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=max_tokens,
+            max_new_tokens=65,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
 
-    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-    return response.strip()
+    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+    return ensure_scorers_in_report(response, stat_prompt)
 
 def fetch_live_sample() -> str:
-    """Fetch the latest finished fixture from football-data.org as a sample."""
     try:
         url = "https://api.football-data.org/v4/competitions/PL/matches?season=2024&status=FINISHED"
         r = requests.get(url, headers={"X-Auth-Token": FOOTBALL_DATA_API_KEY}, timeout=8)
@@ -84,18 +113,17 @@ def fetch_live_sample() -> str:
 if __name__ == "__main__":
     print("\n" + "=" * 65)
     print(" Premier League Match Report Generator - Interactive Tester")
-    print(" Formats: [1] One-Sentence Recap | [2] Bullets | [3] Social Media Tweet")
-    print(" Commands: 'live' (pull from API), 'mode <1|2|3>', 'q' or 'exit' to quit")
+    print(" Type match stats, or 'live' to pull latest from API.")
+    print(" Type 'q' or 'exit' to quit.")
     print("=" * 65)
 
-    mode = "sentence"
     sample = "Arsenal 2-1 Chelsea. Scorers: Arsenal: Saka 24', Havertz 88'; Chelsea: Palmer 61'."
     print(f"\nExample Input:  {sample}")
-    print(f"Model Summary:  {summarize(sample, mode)}\n")
+    print(f"Model Summary:  {summarize(sample)}\n")
 
     while True:
         try:
-            user_input = input(f"Enter match stats [{mode}] > ").strip()
+            user_input = input("Enter match stats > ").strip()
             if not user_input:
                 continue
             if user_input.lower() in ["q", "exit", "quit"]:
@@ -104,19 +132,8 @@ if __name__ == "__main__":
             if user_input.lower() == "live":
                 user_input = fetch_live_sample()
                 print(f"--> Live Fixture: {user_input}")
-            elif user_input.lower().startswith("mode"):
-                parts = user_input.split()
-                if len(parts) > 1:
-                    if parts[1] == "2":
-                        mode = "bullets"
-                    elif parts[1] == "3":
-                        mode = "tweet"
-                    else:
-                        mode = "sentence"
-                    print(f"--> Switched format to: {mode}")
-                    continue
 
-            output = summarize(user_input, mode)
+            output = summarize(user_input)
             print(f"--> Summary: {output}\n")
         except (KeyboardInterrupt, EOFError):
             print("\nExiting.")

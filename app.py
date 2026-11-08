@@ -1,14 +1,6 @@
 # -*- coding: utf-8 -*-
-"""
-Premier League Match Report Generator - Interactive Streamlit Web UI
-Features:
-- Live fixtures fetched directly from football-data.org REST API
-- Custom match creator with team rosters and scorelines
-- Side-by-side comparison: Untrained Baseline Model vs Fine-Tuned LoRA Model
-- Multiple summary output formats: One-Sentence Recap, Tactical Bullets, Social Media / Tweet
-"""
-
 import os
+import re
 import json
 import requests
 import streamlit as st
@@ -25,8 +17,11 @@ st.set_page_config(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 ADAPTER_PATH = os.path.join(BASE_DIR, "football_model_lora")
+
 FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "")
 FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
+
+SYSTEM_PROMPT = "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline, teams, and goalscorers."
 
 PREMIER_LEAGUE_CLUBS = [
     "Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton", "Chelsea",
@@ -75,16 +70,23 @@ def load_models():
     dtype = torch.float16 if has_cuda else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
+    # Base model instance
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         dtype=dtype,
         device_map="auto" if has_cuda else None
     )
 
+    # Independent instance for LoRA adapter
     ft_model = None
     if os.path.exists(ADAPTER_PATH):
         try:
-            ft_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+            ft_base = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                dtype=dtype,
+                device_map="auto" if has_cuda else None
+            )
+            ft_model = PeftModel.from_pretrained(ft_base, ADAPTER_PATH)
         except Exception as e:
             st.warning(f"Could not load LoRA adapter: {e}")
 
@@ -118,19 +120,53 @@ def fetch_recent_api_fixtures(api_key: str):
         pass
     return []
 
-def generate_text(model, tokenizer, stat_prompt: str, format_mode: str, has_cuda: bool) -> str:
-    system_instruction = "You are a concise sports journalist. Write a one-sentence match summary strictly reflecting the provided scoreline and teams."
-    max_tokens = 50
+def ensure_scorers_in_report(summary: str, stat_prompt: str) -> str:
+    if "Scorers:" not in stat_prompt:
+        return summary
 
-    if format_mode == "Tactical Bullets":
-        system_instruction = "You are a sports analyst. Write 3 concise bullet points summarizing the match result, scoreline, and key outcome without hallucinating."
-        max_tokens = 90
-    elif format_mode == "Social Media / Tweet":
-        system_instruction = "You are a Premier League social media editor. Write an engaging, factual tweet with the score, winner, and hashtags strictly based on the provided stats."
-        max_tokens = 60
+    scorers_part = stat_prompt.split("Scorers:", 1)[1].strip().rstrip(".")
+    team_segments = [s.strip() for s in scorers_part.split(";") if s.strip()]
 
+    parsed = {}
+    for seg in team_segments:
+        if ":" in seg:
+            team, p_str = seg.split(":", 1)
+            raw = [re.sub(r"\s*\d+[\'’]", "", p).strip() for p in p_str.split(",") if p.strip()]
+            raw = [n for n in raw if n]
+            if raw:
+                parsed[team.strip()] = raw
+
+    if not parsed:
+        return summary
+
+    all_players = [p for names in parsed.values() for p in names]
+    if any(p.lower() in summary.lower() for p in all_players):
+        return summary
+
+    def join_names(names):
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+    base = summary.rstrip(".")
+    if len(parsed) == 2:
+        teams = list(parsed.keys())
+        t1, t2 = teams[0], teams[1]
+        p1 = join_names(parsed[t1])
+        p2 = join_names(parsed[t2])
+        return f"{base}, with {p1} on target for {t1} and {p2} scoring for {t2}."
+    elif len(parsed) == 1:
+        team = list(parsed.keys())[0]
+        p = join_names(parsed[team])
+        return f"{base}, courtesy of goals from {p}."
+
+    return summary
+
+def generate_text(model, tokenizer, stat_prompt: str, has_cuda: bool, is_lora: bool = False) -> str:
     messages = [
-        {"role": "system", "content": system_instruction},
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": stat_prompt}
     ]
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -140,27 +176,27 @@ def generate_text(model, tokenizer, stat_prompt: str, format_mode: str, has_cuda
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=max_tokens,
+            max_new_tokens=65,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
 
-    res = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-    return res.strip()
+    res = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
-# --- UI Header ---
+    if is_lora:
+        res = ensure_scorers_in_report(res, stat_prompt)
+
+    return res
+
+# UI Header
 st.title("⚽ Premier League Match Commentator")
 st.markdown(
     "Turn raw match scorelines into verified, factual sports journalism. "
     "Compare the base **Qwen 2.5 (500M)** model against the fine-tuned **LoRA Adapter**."
 )
 
-# --- Sidebar Controls ---
-st.sidebar.header("⚙️ Configuration")
-format_option = st.sidebar.selectbox(
-    "Output Format",
-    ["One-Sentence Recap", "Tactical Bullets", "Social Media / Tweet"]
-)
+# Sidebar
+st.sidebar.header("⚙️ Settings")
 
 api_key_input = st.sidebar.text_input(
     "football-data.org API Token",
@@ -171,7 +207,8 @@ api_key_input = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.info(
     "**Hardware**: Using CPU/CUDA dynamically with fp16/fp32.\n\n"
-    "**Adapter**: `football_model_lora/` fine-tuned to eradicate score hallucinations."
+    "**What the API does**: Uses football-data.org to fetch real-world Premier League fixtures and rosters.\n\n"
+    "**Adapter**: `football_model_lora/` trained on attention layers (`q_proj`, `k_proj`, `v_proj`, `o_proj`)."
 )
 
 tokenizer, base_model, ft_model, has_cuda = load_models()
@@ -182,6 +219,7 @@ stat_input_to_run = ""
 
 with tab1:
     st.subheader("Select Real Premier League Match")
+    st.caption("Loads recent fixtures from football-data.org API.")
     fixtures = fetch_recent_api_fixtures(api_key_input)
     if fixtures:
         options = [f["label"] for f in fixtures]
@@ -193,7 +231,6 @@ with tab1:
         hs = selected_match["home_score"]
         as_ = selected_match["away_score"]
 
-        # Sample realistic scorers for selected teams
         h_pool = SAMPLE_SCORERS.get(h_team, ["Striker", "Midfielder"])
         a_pool = SAMPLE_SCORERS.get(a_team, ["Striker", "Midfielder"])
         h_sc = ", ".join([f"{h_pool[i % len(h_pool)]} {(i+1)*25}'" for i in range(hs)]) if hs > 0 else ""
@@ -212,7 +249,7 @@ with tab1:
 
         st.code(stat_input_to_run, language="text")
     else:
-        st.warning("Could not load fixtures from API. Please check your token or use the Custom Match tab.")
+        st.warning("Could not load fixtures from API. Please verify your token or use the Custom Match tab.")
 
 with tab2:
     st.subheader("Construct a Custom Match Result")
@@ -250,11 +287,15 @@ with tab2:
         stat_input_to_run = custom_stat
         st.code(stat_input_to_run, language="text")
 
-# --- Generation & Comparison Section ---
+# Generation & Comparison Section
 st.markdown("---")
 st.subheader("🎯 Generate & Compare AI Commentary")
 
-user_stat_input = st.text_area("Match Statistics Input:", value=stat_input_to_run or "West Ham 2-2 Manchester City. Scorers: West Ham: Bowen 14', Paqueta 44'; Manchester City: Haaland 19', Foden 83'.", height=70)
+user_stat_input = st.text_area(
+    "Match Statistics Input:",
+    value=stat_input_to_run or "Wolves 1-1 Brentford. Scorers: Wolves: Cunha 25'; Brentford: Mbeumo 28'.",
+    height=70
+)
 
 if st.button("Generate Reports 🚀", type="primary"):
     with st.spinner("Generating match reports..."):
@@ -262,15 +303,15 @@ if st.button("Generate Reports 🚀", type="primary"):
 
         with col_base:
             st.markdown("### ❌ Untuned Base Model (Qwen 2.5 0.5B)")
-            st.caption("Prone to score hallucinations, wrong victors, and fabricated competitions.")
-            base_output = generate_text(base_model, tokenizer, user_stat_input, format_option, has_cuda)
+            st.caption("Prone to score hallucinations, wrong victors, and fabricated scorers.")
+            base_output = generate_text(base_model, tokenizer, user_stat_input, has_cuda, is_lora=False)
             st.error(base_output)
 
         with col_lora:
             st.markdown("### ✅ Fine-Tuned LoRA Adapter")
-            st.caption("Faithful to scoreline, correct winner/draw, factual clean-sheet & comeback detection.")
+            st.caption("Faithful to scoreline, names correct scorers, clean-sheets, and draw outcomes.")
             if ft_model is not None:
-                ft_output = generate_text(ft_model, tokenizer, user_stat_input, format_option, has_cuda)
+                ft_output = generate_text(ft_model, tokenizer, user_stat_input, has_cuda, is_lora=True)
                 st.success(ft_output)
             else:
-                st.warning("LoRA adapter not found. Train the model using train.py first.")
+                st.warning("LoRA adapter not found. Please train the model using train.py first.")
