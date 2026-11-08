@@ -5,4 +5,3 @@ trl>=0.9.6
 peft>=0.12.0
 accelerate>=0.33.0
 requests>=2.31.0
-streamlit>=1.35.0
