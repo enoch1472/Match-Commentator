@@ -19,7 +19,7 @@ else:
 TRAIN_PATH = os.path.join(BASE_DIR, "train.jsonl")
 TEST_PATH = os.path.join(BASE_DIR, "test.jsonl")
 
-FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "8cb8eb39b3914b2fbd3f515f8c62f36e")
+FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "")
 FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
 
 TEAMS = [

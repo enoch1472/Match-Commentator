@@ -14,7 +14,7 @@ from peft import PeftModel
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 ADAPTER_PATH = os.path.join(BASE_DIR, "football_model_lora")
-FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "8cb8eb39b3914b2fbd3f515f8c62f36e")
+FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "")
 
 print("Loading model and LoRA adapter...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
