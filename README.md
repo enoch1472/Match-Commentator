@@ -1,40 +1,67 @@
 # Premier League Match Report Generator
 **Enoch Obikoya**
 
-Turns raw Premier League match scores and goal lists into clean, accurate, one-sentence match summaries. Fine-tuned on **Qwen 2.5 (500M)** using **LoRA** to eliminate hallucinations such as inventing scorers, fabricating competitions, or misidentifying winners.
+Turns raw Premier League scores and match statistics into accurate, hallucination-free match summaries. Fine-tuned on **Qwen 2.5 (500M)** using **LoRA** to eliminate common model errors like fabricating scorers, misidentifying winners, or mixing up scorelines.
 
 ---
 
-## System Architecture
+## Architecture Overview
 
 ```mermaid
 flowchart LR
-    A["Synthetic Dataset Generator\n(fetch_and_prepare_dataset.py)"] --> B["Verified Match Pairs\n(train.jsonl / test.jsonl)"]
-    B --> C["LoRA Fine-Tuning\n(train.py on Qwen 2.5 0.5B)"]
-    C --> D["Adapter Weights\n(football_model_lora/)"]
-    D --> E["Side-by-Side Verification\n(compare.py)"]
-    D --> F["Interactive Terminal Tester\n(test_prompt.py)"]
+    API["football-data.org API\n/ Synthetic Generator"] --> D["Chat Dataset\n(train/test.jsonl)"]
+    D --> T["LoRA Fine-Tuning\n(Qwen 2.5 0.5B + TRL)"]
+    T --> A["Adapter Weights\n(football_model_lora/)"]
+    A --> UI["Streamlit Web UI\n(app.py)"]
+    A --> CLI["Interactive CLI\n(test_prompt.py)"]
 ```
 
-- **Data Generator (`fetch_and_prepare_dataset.py`)**: Generates 250 realistic synthetic Premier League match results with verified ground-truth summaries (clean sheets, close wins, draws).
-- **LoRA Training (`train.py`)**: Adapts attention projection layers (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `r=16`) while keeping the 500M backbone frozen.
-- **Evaluation (`compare.py` & `test_prompt.py`)**: Demonstrates side-by-side elimination of hallucinations and provides an interactive testing console.
+- **Data Ingestion (`fetch_and_prepare_dataset.py`)**: Pulls real Premier League results from the football-data.org API, applies factual summary rules (margins, clean sheets, comebacks), and splits into `train.jsonl` / `test.jsonl`.
+- **LoRA Training (`train.py`)**: Fine-tunes attention projection matrices (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `r=16`) on frozen Qwen 2.5 0.5B weights.
+- **Inference & UI (`app.py` & `test_prompt.py`)**: Provides a Streamlit dashboard and terminal tester for live fixtures, custom scorelines, and multiple summary styles (recap sentences, tactical bullets, social media tweets).
 
 ---
 
-## Setup & Running in Spyder / Terminal
+## Setup & API Key
 
-### 1. Install Dependencies
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Get a Free API Key**:
+   To fetch live and historical Premier League fixtures, register for a **free** account at [football-data.org](https://www.football-data.org/) to obtain your API token.
+
+   Set it in your terminal or paste it directly in the Streamlit app sidebar:
+   ```bash
+   # Linux / macOS
+   export FOOTBALL_DATA_API_KEY="your_api_key_here"
+
+   # Windows (PowerShell)
+   $env:FOOTBALL_DATA_API_KEY="your_api_key_here"
+   ```
+   *(Note: If no API key is provided, the data generator automatically falls back to verified synthetic Premier League fixtures.)*
+
+---
+
+## Quickstart
+
+### Run the Web Dashboard
 ```bash
-pip install -r requirements.txt
+streamlit run app.py
 ```
 
-### 2. Project Execution
+### Or Run via Terminal
+```bash
+# 1. Fetch real / synthetic dataset
+python fetch_and_prepare_dataset.py
 
-Run the scripts in order in your terminal or by pressing **F5** in Spyder:
+# 2. Train the LoRA adapter
+python train.py
 
-1. **`fetch_and_prepare_dataset.py`** &rarr; Generates `train.jsonl` (212 samples) and `test.jsonl` (38 samples).
-2. **`train.py`** &rarr; Trains the LoRA adapter and saves weights to `football_model_lora/`.
-3. **`compare.py`** &rarr; Runs side-by-side evaluation (Untrained Base Model vs. Fine-Tuned Model).
-4. **`test_prompt.py`** &rarr; Interactive tester where you can type any match result to get an immediate summary.
-5. **`pipeline_interactive.py`** &rarr; Runs steps 1, 2, and 3 in one single execution.
+# 3. Compare baseline vs fine-tuned model
+python compare.py
+
+# 4. Interactive match tester
+python test_prompt.py
+```
