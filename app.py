@@ -77,7 +77,7 @@ def load_models():
 
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map="auto" if has_cuda else None
     )
 
